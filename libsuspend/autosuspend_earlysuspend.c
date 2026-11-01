@@ -34,6 +34,7 @@
 #define EARLYSUSPEND_WAIT_FOR_FB_WAKE "/sys/power/wait_for_fb_wake"
 
 static int sPowerStatefd;
+static const char *sPowerStatePath = EARLYSUSPEND_SYS_POWER_STATE;
 static const char *pwr_state_mem = "mem";
 static const char *pwr_state_on = "on";
 static pthread_t earlysuspend_thread;
@@ -112,7 +113,7 @@ static int autosuspend_earlysuspend_enable(void)
     ret = write(sPowerStatefd, pwr_state_mem, strlen(pwr_state_mem));
     if (ret < 0) {
         strerror_r(errno, buf, sizeof(buf));
-        ALOGE("Error writing to %s: %s\n", EARLYSUSPEND_SYS_POWER_STATE, buf);
+        ALOGE("Error writing to %s: %s\n", sPowerStatePath, buf);
         goto err;
     }
 
@@ -142,7 +143,7 @@ static int autosuspend_earlysuspend_disable(void)
     ret = write(sPowerStatefd, pwr_state_on, strlen(pwr_state_on));
     if (ret < 0) {
         strerror_r(errno, buf, sizeof(buf));
-        ALOGE("Error writing to %s: %s\n", EARLYSUSPEND_SYS_POWER_STATE, buf);
+        ALOGE("Error writing to %s: %s\n", sPowerStatePath, buf);
         goto err;
     }
 
@@ -204,14 +205,14 @@ struct autosuspend_ops *autosuspend_earlysuspend_init(void)
 
     if (sPowerStatefd < 0) {
         strerror_r(errno, buf, sizeof(buf));
-        ALOGW("Error opening %s: %s\n", EARLYSUSPEND_SYS_POWER_STATE, buf);
-        return NULL;
+        ALOGW("Error opening %s: %s\n", sPowerStatePath, buf);
+        goto err_write;
     }
 
     ret = write(sPowerStatefd, "on", 2);
     if (ret < 0) {
         strerror_r(errno, buf, sizeof(buf));
-        ALOGW("Error writing 'on' to %s: %s\n", EARLYSUSPEND_SYS_POWER_STATE, buf);
+        ALOGW("Error writing 'on' to %s: %s\n", sPowerStatePath, buf);
         goto err_write;
     }
 
@@ -223,5 +224,20 @@ struct autosuspend_ops *autosuspend_earlysuspend_init(void)
 
 err_write:
     close(sPowerStatefd);
-    return NULL;
+
+    // Pre-wakelock Android kernels (including RK28 2.6.25) use wake/standby
+    // on a separate sysfs node instead of on/mem in /sys/power/state.
+    sPowerStatePath = "/sys/android_power/request_state";
+    sPowerStatefd = open(sPowerStatePath, O_RDWR);
+    if (sPowerStatefd < 0) {
+        return NULL;
+    }
+    if (write(sPowerStatefd, "wake", 4) != 4) {
+        close(sPowerStatefd);
+        return NULL;
+    }
+    pwr_state_on = "wake";
+    pwr_state_mem = "standby";
+    ALOGI("Selected legacy Android suspend (%s)", sPowerStatePath);
+    return &autosuspend_earlysuspend_ops;
 }
