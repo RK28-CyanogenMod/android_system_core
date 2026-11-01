@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #define LOG_TAG "NetlinkEvent"
@@ -73,10 +74,31 @@ void NetlinkEvent::dump() {
  * Parse an binary message from a NETLINK_ROUTE netlink socket.
  */
 bool NetlinkEvent::parseBinaryNetlinkMessage(char *buffer, int size) {
-    size_t sz = size;
+    if (size <= 0) {
+        return false;
+    }
+
+    // A char buffer (including NetlinkListener's buffer in base-class tail
+    // padding) need not be aligned for netlink structs. ARMv5 cannot safely
+    // dereference those structs in place. Keep the listener's vendor ABI and
+    // copy only unaligned packets to malloc-aligned storage.
+    char *alignedBuffer = NULL;
+    if ((uintptr_t) buffer % __alignof__(struct nlmsghdr)) {
+        alignedBuffer = (char *) malloc(size);
+        if (alignedBuffer == NULL) {
+            return false;
+        }
+        memcpy(alignedBuffer, buffer, size);
+        buffer = alignedBuffer;
+    }
+
+    int remaining = size;
     const struct nlmsghdr *nh = (struct nlmsghdr *) buffer;
 
-    while (NLMSG_OK(nh, sz) && (nh->nlmsg_type != NLMSG_DONE)) {
+    // Advance and bound-check the same remaining byte count. Advancing in
+    // the for clause also consumes ignored/short messages before continuing.
+    for (; NLMSG_OK(nh, remaining) && nh->nlmsg_type != NLMSG_DONE;
+         nh = NLMSG_NEXT(nh, remaining)) {
 
         if (nh->nlmsg_type == RTM_NEWLINK) {
             int len = nh->nlmsg_len - sizeof(*nh);
@@ -130,9 +152,9 @@ bool NetlinkEvent::parseBinaryNetlinkMessage(char *buffer, int size) {
         } else {
                 SLOGD("Unexpected netlink message. type=0x%x\n", nh->nlmsg_type);
         }
-        nh = NLMSG_NEXT(nh, size);
     }
 
+    free(alignedBuffer);
     return true;
 }
 
